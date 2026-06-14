@@ -9,8 +9,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "ВАШ_ТЕЛЕГРАМ_ТОКЕН"
-ADMIN_ID = 123456789  # Введите ваш Telegram ID (числом)
+BOT_TOKEN = "8550577279:AAEu5YxshUMrEvQh3uUivHbEJxfENyvf8wQ"
+ADMIN_ID = 7184353531  # Введите ваш Telegram ID (числом)
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 logging.basicConfig(level=logging.INFO)
