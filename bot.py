@@ -1,348 +1,54 @@
+import os
 import asyncio
-import logging
-import sqlite3
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import sys
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 
-# ==========================================
-# НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАПОЛНИ!)
-# ==========================================
-BOT_TOKEN = "8550577279:AAEu5YxshUMrEvQh3uUivHbEJxfENyvf8wQ"
-ADMIN_ID = 7184353531  # Твой ID цифрами без кавычек
+# Bothost передаст токен через переменные окружения.
+# Мы берем переменную с именем BOT_TOKEN. Если её нет — бот выдаст ошибку при запуске.
+TOKEN = os.getenv("BOT_TOKEN")
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+if not TOKEN:
+    print("Ошибка: Переменная окружения BOT_TOKEN не задана!", file=sys.stderr)
+    sys.exit(1)
 
-# ==========================================
-# СОСТОЯНИЯ (FSM)
-# ==========================================
-class Form(StatesGroup):
-    waiting_for_search_password = State()
-    waiting_for_file_or_text = State()
-    waiting_for_create_password = State()
-    waiting_for_ban_id = State()
-    waiting_for_unban_id = State()
-    waiting_for_new_limit = State()
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# ==========================================
-# КЛАВИАТУРЫ (ПЕРЕНЕСЕНЫ ВВЕРХ)
-# ==========================================
-def get_main_kb(user_id):
-    buttons = [
-        [KeyboardButton(text="🔍 Найти файл"), KeyboardButton(text="➕ Создать файл")]
-    ]
-    if int(user_id) == int(ADMIN_ID):
-        buttons.append([KeyboardButton(text="👑 Админка")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-def get_admin_kb():
-    # Создаем строго через InlineKeyboardButton
-    b1 = InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban")
-    b2 = InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
-    b3 = InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit")
-    b4 = InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
-    b5 = InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
+# 1. Анимация "Печатающийся текст"
+@dp.message(Command("animate_text"))
+async def cmd_animate_text(message: types.Message):
+    text_to_type = "Привет! Я живой анимированный бот... 🚀"
+    current_text = ""
+    sent_message = await message.answer("░")
     
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [b1, b2],
-        [b3, b4],
-        [b5]
-    ])
-
-# ==========================================
-# БАЗА ДАННЫХ
-# ==========================================
-def init_db():
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS files (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        owner_id INTEGER,
-                        file_id TEXT,
-                        text_content TEXT,
-                        file_type TEXT,
-                        password TEXT UNIQUE,
-                        status TEXT DEFAULT 'approved')''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        is_banned INTEGER DEFAULT 0,
-                        files_created INTEGER DEFAULT 0)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT)''')
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('max_files', '5')")
-    conn.commit()
-    conn.close()
-
-def get_max_files():
-    try:
-        conn = sqlite3.connect("bot_database.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key='max_files'")
-        res = cursor.fetchone()
-        conn.close()
-        return int(res[0]) if res else 5
-    except Exception:
-        return 5
-
-# ==========================================
-# МИДЛВАРЬ БАНА
-# ==========================================
-@dp.message.outer_middleware()
-async def check_ban_middleware(handler, event: Message, data: dict):
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (event.from_user.id,))
-    res = cursor.fetchone()
-    conn.close()
-    if res and res[0] == 1:
-        await event.answer("❌ Вы заблокированы в этом боте.")
-        return
-    return await handler(event, data)
-
-# ==========================================
-# ХЕНДЛЕРЫ КОМАНД И ФУНКЦИЙ
-# ==========================================
-
-@dp.message(Command("start"))
-async def start_cmd(message: Message):
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (message.from_user.id,))
-    conn.commit()
-    conn.close()
-    await message.answer("Привет! Выберите действие на клавиатуре:", reply_markup=get_main_kb(message.from_user.id))
-
-# --- ПОИСК ФАЙЛА ---
-@dp.message(F.text == "🔍 Найти файл")
-async def search_file_start(message: Message, state: FSMContext):
-    await message.answer("Введите пароль для поиска файла:")
-    await state.set_state(Form.waiting_for_search_password)
-
-@dp.message(Form.waiting_for_search_password)
-async def search_file_process(message: Message, state: FSMContext):
-    password = message.text.strip()
-    await state.clear()
-
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT file_id, text_content, file_type FROM files WHERE password = ? AND status = 'approved'", (password,))
-    exact_match = cursor.fetchone()
-
-    if exact_match:
-        file_id, text_content, file_type = exact_match
-        await message.answer("✅ Файл найден!")
-        if file_type == "text":
-            await message.answer(text_content)
-        elif file_type == "photo":
-            await message.answer_photo(file_id, caption=text_content)
-        elif file_type == "document":
-            await message.answer_document(file_id, caption=text_content)
-    else:
-        cursor.execute("SELECT password FROM files WHERE password LIKE ? AND status = 'approved' LIMIT 5", (f"%{password}%",))
-        similar = cursor.fetchall()
+    for char in text_to_type:
+        current_text += char
+        await sent_message.edit_text(f"{current_text}▋")
+        # Для Bothost оставляем безопасную задержку 0.2 сек, чтобы не поймать бан от TG
+        await asyncio.sleep(0.2)
         
-        if similar:
-            sim_list = "\n".join([f"- `{p[0]}`" for p in similar])
-            error_img = "https://itsm.expert/wp-content/uploads/2021/11/404-error.png"
-            await message.answer_photo(
-                photo=error_img,
-                caption=f"❌ Точное совпадение не найдено.\n\nПохожие пароли:\n{sim_list}\n\nПопробуйте ввести заново.",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer("❌ Файл с таким или похожим паролем не найден.")
-    conn.close()
+    await sent_message.edit_text(current_text)
 
-# --- СОЗДАНИЕ ФАЙЛА ---
-@dp.message(F.text == "➕ Создать файл")
-async def create_file_start(message: Message, state: FSMContext):
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT files_created FROM users WHERE user_id = ?", (message.from_user.id,))
-    res = cursor.fetchone()
-    count = res[0] if res else 0
-    conn.close()
+# 2. Анимация "Загрузка"
+@dp.message(Command("loading"))
+async def cmd_loading(message: types.Message):
+    frames = [
+        "⏳ Загрузка системы [⬜⬜⬜⬜⬜] 0%",
+        "⏳ Загрузка системы [🟩⬜⬜⬜⬜] 20%",
+        "⏳ Загрузка системы [🟩🟩⬜⬜⬜] 40%",
+        "⏳ Загрузка системы [🟩🟩🟩⬜⬜] 60%",
+        "⏳ Загрузка системы [🟩🟩🟩🟩⬜] 80%",
+        "✅ Системы запущены! [🟩🟩🟩🟩🟩] 100%"
+    ]
+    
+    sent_message = await message.answer(frames[0])
+    for frame in frames[1:]:
+        await asyncio.sleep(0.6)
+        await sent_message.edit_text(frame)
 
-    if count >= get_max_files():
-        await message.answer(f"❌ Вы достигли лимита на создание файлов ({get_max_files()} шт).")
-        return
-
-    await message.answer("Отправьте мне любой файл, фото или текстовое сообщение:")
-    await state.set_state(Form.waiting_for_file_or_text)
-
-@dp.message(Form.waiting_for_file_or_text)
-async def process_file_drop(message: Message, state: FSMContext):
-    file_id, text_content, file_type = None, None, "text"
-
-    if message.text:
-        text_content = message.text
-        file_type = "text"
-    elif message.photo:
-        file_id = message.photo[-1].file_id
-        text_content = message.caption
-        file_type = "photo"
-    elif message.document:
-        file_id = message.document.file_id
-        text_content = message.caption
-        file_type = "document"
-    else:
-        await message.answer("⚠️ Пожалуйста, отправьте текст, фото или документ.")
-        return
-
-    await state.update_data(file_id=file_id, text_content=text_content, file_type=file_type)
-    await message.answer("Теперь придумайте и отправьте уникальный пароль для этого файла:")
-    await state.set_state(Form.waiting_for_create_password)
-
-@dp.message(Form.waiting_for_create_password)
-async def process_save_password(message: Message, state: FSMContext):
-    password = message.text.strip()
-    data = await state.get_data()
-    await state.clear()
-
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO files (owner_id, file_id, text_content, file_type, password) VALUES (?, ?, ?, ?, ?)",
-                       (message.from_user.id, data['file_id'], data['text_content'], data['file_type'], password))
-        cursor.execute("UPDATE users SET files_created = files_created + 1 WHERE user_id = ?", (message.from_user.id,))
-        conn.commit()
-        await message.answer(f"🎉 Файл успешно сохранен! Пароль для доступа: `{password}`", parse_mode="Markdown")
-    except sqlite3.IntegrityError:
-        await message.answer("❌ Этот пароль уже занят. Попробуйте создать файл заново с другим паролем.")
-    finally:
-        conn.close()
-
-# ==========================================
-# АДМИН ПАНЕЛЬ
-# ==========================================
-@dp.message(F.text == "👑 Админка")
-async def admin_panel(message: Message):
-    if int(message.from_user.id) != int(ADMIN_ID):
-        await message.answer("⚠️ У вас нет прав администратора.")
-        return
-    await message.answer("Добро пожаловать в панель управления администратора:", reply_markup=get_admin_kb())
-
-@dp.callback_query(F.data == "admin_ban")
-async def admin_ban_start(call: CallbackQuery, state: FSMContext):
-    if int(call.from_user.id) != int(ADMIN_ID): return
-    await call.message.answer("Введите Telegram ID пользователя для блокировки:")
-    await state.set_state(Form.waiting_for_ban_id)
-    await call.answer()
-
-@dp.message(Form.waiting_for_ban_id)
-async def admin_ban_proc(message: Message, state: FSMContext):
-    if int(message.from_user.id) != int(ADMIN_ID): return
-    try:
-        uid = int(message.text)
-        conn = sqlite3.connect("bot_database.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO users (user_id, is_banned) VALUES (?, 1)", (uid,))
-        conn.commit()
-        conn.close()
-        await message.answer(f"🚫 Пользователь {uid} успешно заблокирован.")
-    except ValueError:
-        await message.answer("Вводите только цифры (ID).")
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_unban")
-async def admin_unban_start(call: CallbackQuery, state: FSMContext):
-    if int(call.from_user.id) != int(ADMIN_ID): return
-    await call.message.answer("Введите Telegram ID пользователя для разблокировки:")
-    await state.set_state(Form.waiting_for_unban_id)
-    await call.answer()
-
-@dp.message(Form.waiting_for_unban_id)
-async def admin_unban_proc(message: Message, state: FSMContext):
-    if int(message.from_user.id) != int(ADMIN_ID): return
-    try:
-        uid = int(message.text)
-        conn = sqlite3.connect("bot_database.db")
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (uid,))
-        conn.commit()
-        conn.close()
-        await message.answer(f"✅ Пользователь {uid} разблокирован.")
-    except ValueError:
-        await message.answer("Вводите только цифры (ID).")
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_limit")
-async def admin_limit_start(call: CallbackQuery, state: FSMContext):
-    if int(call.from_user.id) != int(ADMIN_ID): return
-    await call.message.answer(f"Текущий лимит: {get_max_files()} файлов. Введите новый лимит:")
-    await state.set_state(Form.waiting_for_new_limit)
-    await call.answer()
-
-@dp.message(Form.waiting_for_new_limit)
-async def admin_limit_proc(message: Message, state: FSMContext):
-    if int(message.from_user.id) != int(ADMIN_ID): return
-    try:
-        new_lim = int(message.text)
-        conn = sqlite3.connect("bot_database.db")
-        cursor = conn.cursor()
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'max_files'", (str(new_lim),))
-        conn.commit()
-        conn.close()
-        await message.answer(f"⚙️ Лимит успешно изменен на {new_lim}")
-    except ValueError:
-        await message.answer("Введите целое число.")
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_all_files")
-async def admin_all_files(call: CallbackQuery):
-    if int(call.from_user.id) != int(ADMIN_ID): return
-    try:
-        conn = sqlite3.connect("bot_database.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, password, file_type FROM files")
-        files = cursor.fetchall()
-        conn.close()
-
-        if not files:
-            await call.message.answer("База файлов пуста.")
-            await call.answer()
-            return
-
-        text = "📂 **Список всех файлов:**\n\n"
-        kb_buttons = []
-        for f in files:
-            fid, pwd, ftype = f
-            text += f"ID: {fid} | Тип: {ftype} | Пароль: `{pwd}`\n"
-            kb_buttons.append([InlineKeyboardButton(text=f"🗑 Удалить {pwd}", callback_query_data=f"del_{fid}")])
-        
-        await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Ошибка чтения файлов: {e}")
-        await call.message.answer("Ошибка базы данных.")
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("del_"))
-async def admin_delete_file(call: CallbackQuery):
-    if int(call.from_user.id) != int(ADMIN_ID): return
-    file_id_db = int(call.data.split("_")[1])
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM files WHERE id = ?", (file_id_db,))
-    conn.commit()
-    conn.close()
-    await call.message.answer(f"🗑 Файл с ID {file_id_db} удален.")
-    await call.answer()
-
-@dp.callback_query(F.data == "admin_mod")
-async def admin_mod(call: CallbackQuery):
-    await call.message.answer("Модерация: все файлы одобрены автоматически.")
-    await call.answer()
-
-# --- СТАРТ ---
 async def main():
-    init_db()
+    print("Бот успешно запущен на Bothost!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
