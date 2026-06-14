@@ -8,20 +8,59 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- НАСТРОЙКИ ---
+# ==========================================
+# НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАПОЛНИ!)
+# ==========================================
 BOT_TOKEN = "8550577279:AAEu5YxshUMrEvQh3uUivHbEJxfENyvf8wQ"
-ADMIN_ID = 7184353531  # Введите ваш Telegram ID численного формата (без кавычек)
+ADMIN_ID = 7184353531  # Твой ID цифрами без кавычек
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- БАЗА ДАННЫХ ---
+# ==========================================
+# СОСТОЯНИЯ (FSM)
+# ==========================================
+class Form(StatesGroup):
+    waiting_for_search_password = State()
+    waiting_for_file_or_text = State()
+    waiting_for_create_password = State()
+    waiting_for_ban_id = State()
+    waiting_for_unban_id = State()
+    waiting_for_new_limit = State()
+
+# ==========================================
+# КЛАВИАТУРЫ (ПЕРЕНЕСЕНЫ ВВЕРХ)
+# ==========================================
+def get_main_kb(user_id):
+    buttons = [
+        [KeyboardButton(text="🔍 Найти файл"), KeyboardButton(text="➕ Создать файл")]
+    ]
+    if int(user_id) == int(ADMIN_ID):
+        buttons.append([KeyboardButton(text="👑 Админка")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+def get_admin_kb():
+    # Создаем строго через InlineKeyboardButton
+    b1 = InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban")
+    b2 = InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
+    b3 = InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit")
+    b4 = InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
+    b5 = InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [b1, b2],
+        [b3, b4],
+        [b5]
+    ])
+
+# ==========================================
+# БАЗА ДАННЫХ
+# ==========================================
 def init_db():
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    # Таблица файлов
     cursor.execute('''CREATE TABLE IF NOT EXISTS files (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         owner_id INTEGER,
@@ -30,12 +69,10 @@ def init_db():
                         file_type TEXT,
                         password TEXT UNIQUE,
                         status TEXT DEFAULT 'approved')''')
-    # Таблица пользователей и лимитов
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                         user_id INTEGER PRIMARY KEY,
                         is_banned INTEGER DEFAULT 0,
                         files_created INTEGER DEFAULT 0)''')
-    # Системные настройки
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
                         key TEXT PRIMARY KEY,
                         value TEXT)''')
@@ -54,55 +91,9 @@ def get_max_files():
     except Exception:
         return 5
 
-# --- СОСТОЯНИЯ (FSM) ---
-class Form(StatesGroup):
-    waiting_for_search_password = State()
-    waiting_for_file_or_text = State()
-    waiting_for_create_password = State()
-    waiting_for_ban_id = State()
-    waiting_for_unban_id = State()
-    waiting_for_new_limit = State()
-
-# --- КЛАВИАТУРЫ ---
-# --- КЛАВИАТУРА АДМИНКИ (УПРОЩЕННЫЙ ВАРИАНТ) ---
-def get_admin_kb():
-    # Создаем инлайн-кнопки строго по правилам aiogram 3.x
-    btn_ban = InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban")
-    btn_unban = InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
-    btn_limit = InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit")
-    btn_mod = InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
-    btn_all = InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
-    
-    # Собираем сетку кнопок
-    keyboard = [
-        [btn_ban, btn_unban],
-        [btn_limit, btn_mod],
-        [btn_all]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-
-# --- ХЕНДЛЕР ВЫЗОВА АДМИНКИ ---
-@dp.message(F.text == "👑 Админка")
-async def admin_panel(message: Message):
-    # Явное приведение к int для надежности сравнения ID
-    if int(message.from_user.id) != int(ADMIN_ID):
-        await message.answer("⚠️ У вас нет прав администратора.")
-        return
-        
-    try:
-        # Генерируем клавиатуру заново при вызове
-        kb = get_admin_kb()
-        await message.answer(
-            text="Добро пожаловать в панель управления администратора:", 
-            reply_markup=kb
-        )
-    except Exception as e:
-        logging.error(f"Критическая ошибка вызова админки: {e}")
-        await message.answer("Произошла ошибка при генерации меню админки.")
-
-
-# --- МИДЛВАРЬ ДЛЯ ПРОВЕРКИ БАНА ---
+# ==========================================
+# МИДЛВАРЬ БАНА
+# ==========================================
 @dp.message.outer_middleware()
 async def check_ban_middleware(handler, event: Message, data: dict):
     conn = sqlite3.connect("bot_database.db")
@@ -115,7 +106,9 @@ async def check_ban_middleware(handler, event: Message, data: dict):
         return
     return await handler(event, data)
 
-# --- ХЕНДЛЕРЫ ---
+# ==========================================
+# ХЕНДЛЕРЫ КОМАНД И ФУНКЦИЙ
+# ==========================================
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
@@ -139,8 +132,6 @@ async def search_file_process(message: Message, state: FSMContext):
 
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    
-    # Ищем точное совпадение
     cursor.execute("SELECT file_id, text_content, file_type FROM files WHERE password = ? AND status = 'approved'", (password,))
     exact_match = cursor.fetchone()
 
@@ -154,13 +145,11 @@ async def search_file_process(message: Message, state: FSMContext):
         elif file_type == "document":
             await message.answer_document(file_id, caption=text_content)
     else:
-        # Ищем похожие пароли (LIKE)
         cursor.execute("SELECT password FROM files WHERE password LIKE ? AND status = 'approved' LIMIT 5", (f"%{password}%",))
         similar = cursor.fetchall()
         
         if similar:
             sim_list = "\n".join([f"- `{p[0]}`" for p in similar])
-            # Картинка заглушка для ошибки
             error_img = "https://itsm.expert/wp-content/uploads/2021/11/404-error.png"
             await message.answer_photo(
                 photo=error_img,
@@ -190,9 +179,7 @@ async def create_file_start(message: Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_file_or_text)
 async def process_file_drop(message: Message, state: FSMContext):
-    file_id = None
-    text_content = None
-    file_type = "text"
+    file_id, text_content, file_type = None, None, "text"
 
     if message.text:
         text_content = message.text
@@ -232,19 +219,19 @@ async def process_save_password(message: Message, state: FSMContext):
     finally:
         conn.close()
 
-# --- АДМИН ПАНЕЛЬ ---
+# ==========================================
+# АДМИН ПАНЕЛЬ
+# ==========================================
 @dp.message(F.text == "👑 Админка")
 async def admin_panel(message: Message):
     if int(message.from_user.id) != int(ADMIN_ID):
         await message.answer("⚠️ У вас нет прав администратора.")
         return
-    await message.answer("Добро пожаловать в панель управления:", reply_markup=get_admin_kb())
+    await message.answer("Добро пожаловать в панель управления администратора:", reply_markup=get_admin_kb())
 
 @dp.callback_query(F.data == "admin_ban")
 async def admin_ban_start(call: CallbackQuery, state: FSMContext):
-    if int(call.from_user.id) != int(ADMIN_ID): 
-        await call.answer("Отказано в доступе", show_alert=True)
-        return
+    if int(call.from_user.id) != int(ADMIN_ID): return
     await call.message.answer("Введите Telegram ID пользователя для блокировки:")
     await state.set_state(Form.waiting_for_ban_id)
     await call.answer()
@@ -310,10 +297,7 @@ async def admin_limit_proc(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_all_files")
 async def admin_all_files(call: CallbackQuery):
-    if int(call.from_user.id) != int(ADMIN_ID): 
-        await call.answer("Отказано в доступе", show_alert=True)
-        return
-        
+    if int(call.from_user.id) != int(ADMIN_ID): return
     try:
         conn = sqlite3.connect("bot_database.db")
         cursor = conn.cursor()
@@ -327,22 +311,16 @@ async def admin_all_files(call: CallbackQuery):
             return
 
         text = "📂 **Список всех файлов:**\n\n"
-        keyboard_buttons = []
-        
+        kb_buttons = []
         for f in files:
             fid, pwd, ftype = f
             text += f"ID: {fid} | Тип: {ftype} | Пароль: `{pwd}`\n"
-            keyboard_buttons.append([
-                InlineKeyboardButton(text=f"🗑 Удалить {pwd}", callback_query_data=f"del_{fid}")
-            ])
+            kb_buttons.append([InlineKeyboardButton(text=f"🗑 Удалить {pwd}", callback_query_data=f"del_{fid}")])
         
-        kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-        await call.message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        
+        await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Ошибка в админке: {e}")
-        await call.message.answer("Произошла ошибка при чтении БД.")
-        
+        logging.error(f"Ошибка чтения файлов: {e}")
+        await call.message.answer("Ошибка базы данных.")
     await call.answer()
 
 @dp.callback_query(F.data.startswith("del_"))
@@ -354,18 +332,17 @@ async def admin_delete_file(call: CallbackQuery):
     cursor.execute("DELETE FROM files WHERE id = ?", (file_id_db,))
     conn.commit()
     conn.close()
-    await call.message.answer(f"🗑 Файл с ID {file_id_db} удален из базы.")
+    await call.message.answer(f"🗑 Файл с ID {file_id_db} удален.")
     await call.answer()
 
 @dp.callback_query(F.data == "admin_mod")
 async def admin_mod(call: CallbackQuery):
-    await call.message.answer("Все файлы по умолчанию одобрены. Используйте вкладку 'Все файлы' для удаления нежелательного контента.")
+    await call.message.answer("Модерация: все файлы одобрены автоматически.")
     await call.answer()
 
-# --- ЗАПУСК БОТА ---
+# --- СТАРТ ---
 async def main():
     init_db()
-    print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
