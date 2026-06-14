@@ -5,30 +5,25 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from openai import OpenAI
 
-# 1. БЕЗОПАСНОЕ ПОЛУЧЕНИЕ КЛЮЧЕЙ ИЗ ПАНЕЛИ ХОСТИНГА (Env переменные)
+# 1. ПОЛУЧЕНИЕ КЛЮЧЕЙ ИЗ ПАНЕЛИ ХОСТИНГА
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+# Сюда вы вставите API-ключ, который создадите в OpenRouter (он начинается на sk-or-...)
+OPENROUTER_API_KEY = os.getenv("DEEPSEEK_API_KEY") 
 
-# Проверка, что переменные вообще заданы на хостинге
-if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
-    raise ValueError(
-        "КРИТИЧЕСКАЯ ОШИБКА: Переменные TELEGRAM_TOKEN или DEEPSEEK_API_KEY не настроены в панели хостинга!"
-    )
+if not TELEGRAM_TOKEN or not OPENROUTER_API_KEY:
+    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Токены не настроены в панели хостинга!")
 
-# Инициализируем клиента DeepSeek (через совместимый OpenAI SDK)
+# Меняем базовый URL на OpenRouter
 client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
 )
 
-# Инициализируем бота и диспетчер aiogram
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Включаем логирование, чтобы ошибки отображались во вкладке "Логи работы"
 logging.basicConfig(level=logging.INFO)
 
-# 2. ХАРАКТЕР БОТА "СКУБОХАМ"
 SYSTEM_PROMPT = (
     "Ты — Скубохам, говорящий пес-ИИ с тяжелым характером. Ты ведешь себя как Скуби-Ду, "
     "который разочаровался в человечестве. Ты обожаешь Скуби-снеки, но ненавидишь глупые вопросы "
@@ -38,7 +33,6 @@ SYSTEM_PROMPT = (
     "обертку из сарказма и ворчания."
 )
 
-# Обработка команды /start
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.reply(
@@ -46,16 +40,15 @@ async def cmd_start(message: types.Message):
         "Давай свои вопросы, только быстро. И где мои Скуби-снеки?!"
     )
 
-# Обработка всех текстовых сообщений
 @dp.message()
 async def handle_message(message: types.Message):
-    # Показываем в Telegram статус "печатает...", пока DeepSeek генерирует ответ
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
     try:
-        # Запрос к актуальной быстрой модели DeepSeek
+        # ЗАПРОС К OPENROUTER
         response = client.chat.completions.create(
-            model="deepseek-v4-flash",
+            # Указываем ID модели в формате OpenRouter
+            model="deepseek/deepseek-chat", 
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": message.text}
@@ -63,22 +56,17 @@ async def handle_message(message: types.Message):
             stream=False
         )
         
-        # Получаем ответ
         ai_response = response.choices[0].message.content
-        
-        # Отправляем пользователю
         await message.reply(ai_response)
         
     except Exception as e:
-        logging.error(f"Ошибка при обращении к API DeepSeek: {e}")
+        logging.error(f"Ошибка при обращении к OpenRouter: {e}")
         await message.reply(
-            "Р-р-р! Мой собачий процессор завис от твоей чепухи (или просто API упал). "
-            "Короче, зайди позже."
+            "Р-р-р! Мой собачий процессор завис от твоей чепухи. Короче, зайди позже."
         )
 
-# Функция запуска
 async def main():
-    print("Бот Скубохам успешно запущен на хостинге Bothost и готов ворчать!")
+    print("Бот Скубохам успешно запущен через OpenRouter!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
