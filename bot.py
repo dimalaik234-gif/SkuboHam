@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "8550577279:AAEu5YxshUMrEvQh3uUivHbEJxfENyvf8wQ"
-ADMIN_ID = 7184353531  # Введите ваш Telegram ID (числом)
+ADMIN_ID = 7184353531  # Введите ваш Telegram ID численного формата (без кавычек)
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 logging.basicConfig(level=logging.INFO)
@@ -44,12 +44,15 @@ def init_db():
     conn.close()
 
 def get_max_files():
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='max_files'")
-    res = cursor.fetchone()
-    conn.close()
-    return int(res[0]) if res else 5
+    try:
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key='max_files'")
+        res = cursor.fetchone()
+        conn.close()
+        return int(res[0]) if res else 5
+    except Exception:
+        return 5
 
 # --- СОСТОЯНИЯ (FSM) ---
 class Form(StatesGroup):
@@ -65,17 +68,23 @@ def get_main_kb(user_id):
     buttons = [
         [KeyboardButton(text="🔍 Найти файл"), KeyboardButton(text="➕ Создать файл")]
     ]
-    if user_id == ADMIN_ID:
+    if int(user_id) == int(ADMIN_ID):
         buttons.append([KeyboardButton(text="👑 Админка")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def get_admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban"),
-         InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")],
-        [InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit"),
-         InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")],
-        [InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")]
+        [
+            InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban"),
+            InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit"),
+            InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
+        ]
     ])
 
 # --- МИДЛВАРЬ ДЛЯ ПРОВЕРКИ БАНА ---
@@ -136,7 +145,7 @@ async def search_file_process(message: Message, state: FSMContext):
         
         if similar:
             sim_list = "\n".join([f"- `{p[0]}`" for p in similar])
-            # Отправляем заглушку-картинку (можно заменить на свою ссылку или file_id)
+            # Картинка заглушка для ошибки
             error_img = "https://itsm.expert/wp-content/uploads/2021/11/404-error.png"
             await message.answer_photo(
                 photo=error_img,
@@ -211,19 +220,23 @@ async def process_save_password(message: Message, state: FSMContext):
 # --- АДМИН ПАНЕЛЬ ---
 @dp.message(F.text == "👑 Админка")
 async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if int(message.from_user.id) != int(ADMIN_ID):
+        await message.answer("⚠️ У вас нет прав администратора.")
         return
     await message.answer("Добро пожаловать в панель управления:", reply_markup=get_admin_kb())
 
 @dp.callback_query(F.data == "admin_ban")
 async def admin_ban_start(call: CallbackQuery, state: FSMContext):
+    if int(call.from_user.id) != int(ADMIN_ID): 
+        await call.answer("Отказано в доступе", show_alert=True)
+        return
     await call.message.answer("Введите Telegram ID пользователя для блокировки:")
     await state.set_state(Form.waiting_for_ban_id)
     await call.answer()
 
 @dp.message(Form.waiting_for_ban_id)
 async def admin_ban_proc(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if int(message.from_user.id) != int(ADMIN_ID): return
     try:
         uid = int(message.text)
         conn = sqlite3.connect("bot_database.db")
@@ -238,13 +251,14 @@ async def admin_ban_proc(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_unban")
 async def admin_unban_start(call: CallbackQuery, state: FSMContext):
+    if int(call.from_user.id) != int(ADMIN_ID): return
     await call.message.answer("Введите Telegram ID пользователя для разблокировки:")
     await state.set_state(Form.waiting_for_unban_id)
     await call.answer()
 
 @dp.message(Form.waiting_for_unban_id)
 async def admin_unban_proc(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if int(message.from_user.id) != int(ADMIN_ID): return
     try:
         uid = int(message.text)
         conn = sqlite3.connect("bot_database.db")
@@ -259,13 +273,14 @@ async def admin_unban_proc(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_limit")
 async def admin_limit_start(call: CallbackQuery, state: FSMContext):
+    if int(call.from_user.id) != int(ADMIN_ID): return
     await call.message.answer(f"Текущий лимит: {get_max_files()} файлов. Введите новый лимит:")
     await state.set_state(Form.waiting_for_new_limit)
     await call.answer()
 
 @dp.message(Form.waiting_for_new_limit)
 async def admin_limit_proc(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if int(message.from_user.id) != int(ADMIN_ID): return
     try:
         new_lim = int(message.text)
         conn = sqlite3.connect("bot_database.db")
@@ -278,33 +293,46 @@ async def admin_limit_proc(message: Message, state: FSMContext):
         await message.answer("Введите целое число.")
     await state.clear()
 
-# Просмотр всех файлов (с возможностью удаления)
 @dp.callback_query(F.data == "admin_all_files")
 async def admin_all_files(call: CallbackQuery):
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, password, file_type FROM files")
-    files = cursor.fetchall()
-    conn.close()
-
-    if not files:
-        await call.message.answer("База файлов пуста.")
-        await call.answer()
+    if int(call.from_user.id) != int(ADMIN_ID): 
+        await call.answer("Отказано в доступе", show_alert=True)
         return
+        
+    try:
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, password, file_type FROM files")
+        files = cursor.fetchall()
+        conn.close()
 
-    text = "📂 **Список всех файлов:**\n\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    for f in files:
-        fid, pwd, ftype = f
-        text += f"ID: {fid} | Тип: {ftype} | Пароль: `{pwd}`\n"
-        # Кнопка удаления для каждого файла
-        kb.inline_keyboard.append([InlineKeyboardButton(text=f"🗑 Удалить {pwd}", callback_query_data=f"del_{fid}")])
-    
-    await call.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        if not files:
+            await call.message.answer("База файлов пуста.")
+            await call.answer()
+            return
+
+        text = "📂 **Список всех файлов:**\n\n"
+        keyboard_buttons = []
+        
+        for f in files:
+            fid, pwd, ftype = f
+            text += f"ID: {fid} | Тип: {ftype} | Пароль: `{pwd}`\n"
+            keyboard_buttons.append([
+                InlineKeyboardButton(text=f"🗑 Удалить {pwd}", callback_query_data=f"del_{fid}")
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        await call.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        
+    except Exception as e:
+        logging.error(f"Ошибка в админке: {e}")
+        await call.message.answer("Произошла ошибка при чтении БД.")
+        
     await call.answer()
 
 @dp.callback_query(F.data.startswith("del_"))
 async def admin_delete_file(call: CallbackQuery):
+    if int(call.from_user.id) != int(ADMIN_ID): return
     file_id_db = int(call.data.split("_")[1])
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
@@ -314,7 +342,6 @@ async def admin_delete_file(call: CallbackQuery):
     await call.message.answer(f"🗑 Файл с ID {file_id_db} удален из базы.")
     await call.answer()
 
-# Модерация (Простой вывод файлов со статусом 'pending', если захотите усложнить)
 @dp.callback_query(F.data == "admin_mod")
 async def admin_mod(call: CallbackQuery):
     await call.message.answer("Все файлы по умолчанию одобрены. Используйте вкладку 'Все файлы' для удаления нежелательного контента.")
