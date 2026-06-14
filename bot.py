@@ -64,28 +64,43 @@ class Form(StatesGroup):
     waiting_for_new_limit = State()
 
 # --- КЛАВИАТУРЫ ---
-def get_main_kb(user_id):
-    buttons = [
-        [KeyboardButton(text="🔍 Найти файл"), KeyboardButton(text="➕ Создать файл")]
-    ]
-    if int(user_id) == int(ADMIN_ID):
-        buttons.append([KeyboardButton(text="👑 Админка")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
+# --- КЛАВИАТУРА АДМИНКИ (УПРОЩЕННЫЙ ВАРИАНТ) ---
 def get_admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban"),
-            InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit"),
-            InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
-        ],
-        [
-            InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
-        ]
-    ])
+    # Создаем инлайн-кнопки строго по правилам aiogram 3.x
+    btn_ban = InlineKeyboardButton(text="🚫 Заблокировать", callback_query_data="admin_ban")
+    btn_unban = InlineKeyboardButton(text="✅ Разблокировать", callback_query_data="admin_unban")
+    btn_limit = InlineKeyboardButton(text="⚙️ Изменить лимит", callback_query_data="admin_limit")
+    btn_mod = InlineKeyboardButton(text="📝 Модерация файлов", callback_query_data="admin_mod")
+    btn_all = InlineKeyboardButton(text="📊 Все файлы", callback_query_data="admin_all_files")
+    
+    # Собираем сетку кнопок
+    keyboard = [
+        [btn_ban, btn_unban],
+        [btn_limit, btn_mod],
+        [btn_all]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# --- ХЕНДЛЕР ВЫЗОВА АДМИНКИ ---
+@dp.message(F.text == "👑 Админка")
+async def admin_panel(message: Message):
+    # Явное приведение к int для надежности сравнения ID
+    if int(message.from_user.id) != int(ADMIN_ID):
+        await message.answer("⚠️ У вас нет прав администратора.")
+        return
+        
+    try:
+        # Генерируем клавиатуру заново при вызове
+        kb = get_admin_kb()
+        await message.answer(
+            text="Добро пожаловать в панель управления администратора:", 
+            reply_markup=kb
+        )
+    except Exception as e:
+        logging.error(f"Критическая ошибка вызова админки: {e}")
+        await message.answer("Произошла ошибка при генерации меню админки.")
+
 
 # --- МИДЛВАРЬ ДЛЯ ПРОВЕРКИ БАНА ---
 @dp.message.outer_middleware()
