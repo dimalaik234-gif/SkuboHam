@@ -3,3 +3,4 @@ asyncio
 Pillow==10.3.0
 gTTS
 aiohttp
+opencv-python-headless
