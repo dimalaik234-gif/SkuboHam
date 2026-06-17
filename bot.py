@@ -5,7 +5,7 @@ from aiogram.filters import CommandStart
 
 # Твои токены
 TG_TOKEN = "8550577279:AAFz0GKDzblPFwMROagx0JezVl16VqlYDUg"
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
