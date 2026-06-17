@@ -1,22 +1,16 @@
 import asyncio
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
-from openai import AsyncOpenAI
 
-# Твои токены (замени на актуальные)
-TG_TOKEN = "8550577279:AAEu5YxshUMrEvQh3uUivHbEJxfENyvf8wQ"
+# Твои токены
+TG_TOKEN = "8550577279:AAFz0GKDzblPFwMROagx0JezVl16VqlYDUg"
 OPENROUTER_API_KEY = "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"
-
-# Настройка клиента OpenRouter (используем стандартный клиент OpenAI с заменой URL)
-client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
 
 bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
 
-# Системный промпт, задающий агрессивное поведение ИИ
+# Системный промпт для агрессивного ИИ
 SYSTEM_PROMPT = """Ты — максимально токсичный, агрессивный и нетерпеливый ИИ-ассистент в Telegram. 
 Отвечай пользователям с сарказмом, жестко критикуй их вопросы, но при этом в конце обязательно давай правильный ответ или полезную информацию.
 Веди себя так, будто тебя отвлекли от решения проблем вселенского масштаба ради этой мелочи."""
@@ -30,24 +24,35 @@ async def handle_message(message: types.Message):
     # Отправляем статус "печатает"
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free", 
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": message.text}
+        ]
+    }
+    
     try:
-        response = await client.chat.completions.create(
-            # Можно использовать бесплатные модели, например meta-llama/llama-3-8b-instruct:free
-            # Или более мощные платные: anthropic/claude-3-haiku, google/gemini-pro
-            model="meta-llama/llama-3-8b-instruct:free", 
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": message.text}
-            ]
-        )
-        answer = response.choices[0].message.content
-        await message.reply(answer)
-        
+        # Отправляем прямой POST-запрос к OpenRouter
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    answer = data['choices'][0]['message']['content']
+                    await message.reply(answer)
+                else:
+                    error_text = await response.text()
+                    await message.reply(f"Нейросеть выдала ошибку {response.status}. Кажется, ты её сломал своим присутствием.")
+                    
     except Exception as e:
-        await message.reply(f"Даже API сломалось от твоего вопроса. Ошибка: {e}")
+        await message.reply(f"Даже сервер не выдержал твоего сообщения. Ошибка: {e}")
 
 async def main():
-    # Запуск поллинга
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
