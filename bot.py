@@ -1,225 +1,129 @@
 import os
 import asyncio
-import re
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 import yt_dlp
-import logging
 
+# Включаем логирование, чтобы видеть ошибки в консоли хостинга
+import logging
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = "8868388327:AAFuR-w-jIKwG57g6B6oJQd0_stBcZrQKGI"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Создаем папку для временных файлов, если её нет
 if not os.path.exists("downloads"):
     os.makedirs("downloads")
 
-class EditorStates(StatesGroup):
-    entering_circle_time = State()
-
-# --- ФУНКЦИИ СКАЧИВАНИЯ ---
-def download_media(url: str, user_id: int, audio_only=False):
-    outtmpl = f"downloads/{user_id}_raw.%(ext)s"
+# Функция для скачивания через yt-dlp (запускается в отдельном потоке, чтобы бот не зависал)
+def download_media(url: str, mode: str, user_id: int):
+    outtmpl = f"downloads/{user_id}_%(id)s.%(ext)s"
     
-    # Добавляем impersonate для обхода защиты TikTok
-    ydl_opts = {
-        'outtmpl': outtmpl,
-        'quiet': True,
-        'impersonate': 'chrome'
-    }
-    
-    if audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
-    else:
-        ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-        ydl_opts['merge_output_format'] = 'mp4'
+    if mode == "video":
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': outtmpl,
+            'merge_output_format': 'mp4',
+            'quiet': True
+        }
+    else:  # mode == "audio"
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': outtmpl,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True
+        }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
-        if audio_only:
-            return os.path.splitext(filename)[0] + ".mp3"
-        return os.path.splitext(filename)[0] + ".mp4"
+        
+        if mode == "audio":
+            filename = os.path.splitext(filename)[0] + ".mp3"
+        elif not filename.endswith(".mp4"):
+            # На случай, если формат изменился при склейке
+            filename = os.path.splitext(filename)[0] + ".mp4"
+            
+        return filename
 
-# --- ФУНКЦИИ FFMPEG (ВИДЕО) ---
-async def run_ffmpeg(cmd):
-    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    await process.communicate()
-    return process.returncode == 0
-
-async def convert_to_blur_circle(input_path, output_path, start_time="00:00"):
-    filter_complex = (
-        "[0:v]scale=480:480:force_original_aspect_ratio=increase,boxblur=20:10[bg];"
-        "[0:v]scale=480:480:force_original_aspect_ratio=decrease[fg];"
-        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2"
-    )
-    cmd = ['ffmpeg', '-y', '-ss', start_time, '-i', input_path, '-filter_complex', filter_complex, '-t', '60', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', output_path]
-    return await run_ffmpeg(cmd)
-
-async def convert_to_crop_circle(input_path, output_path, start_time="00:00"):
-    cmd = ['ffmpeg', '-y', '-ss', start_time, '-i', input_path, '-vf', "crop='min(iw,ih):min(iw,ih)',scale=480:480", '-t', '60', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', output_path]
-    return await run_ffmpeg(cmd)
-
-async def convert_to_mirror(input_path, output_path):
-    cmd = ['ffmpeg', '-y', '-i', input_path, '-vf', 'hflip', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'copy', output_path]
-    return await run_ffmpeg(cmd)
-
-# --- ФУНКЦИИ FFMPEG (АУДИО) ---
-async def convert_audio_bass(input_path, output_path):
-    cmd = ['ffmpeg', '-y', '-i', input_path, '-af', 'equalizer=f=60:width_type=h:width=50:g=15', '-vn', '-c:a', 'libmp3lame', '-q:a', '2', output_path]
-    return await run_ffmpeg(cmd)
-
-async def convert_audio_8d(input_path, output_path):
-    cmd = ['ffmpeg', '-y', '-i', input_path, '-af', 'apulsator=hz=0.12', '-vn', '-c:a', 'libmp3lame', '-q:a', '2', output_path]
-    return await run_ffmpeg(cmd)
-
-# --- ХЭНДЛЕРЫ ---
+# Команда /start
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("👋 **Привет! Я твоя медиа-студия.**\nОтправь мне ссылку на TikTok, YouTube или Pinterest.")
+    welcome_text = (
+        "👋 **Привет, креатор! Я MediaForge Bot.**\n\n"
+        "Я помогу тебе вытащить исходники для твоего монтажа. "
+        "Просто отправь мне ссылку на видео из **TikTok, Pinterest, YouTube** или Instagram.\n\n"
+        "⚡️ Что я умею:\n"
+        "• Скачивать видео в лучшем качестве\n"
+        "• Вырезать аудиодорожку в MP3"
+    )
+    await message.answer(welcome_text, parse_mode="Markdown")
 
+# Хэндлер на получение ссылок
 @dp.message(F.text.regexp(r'(https?://[^\s]+)'))
-async def handle_link(message: Message, state: FSMContext):
+async def handle_link(message: Message):
     url = message.text
-    await state.update_data(video_url=url)
     
+    # Создаем инлайн-кнопки для выбора действия
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🎬 Скачать MP4", callback_data="base_video"),
-            InlineKeyboardButton(text="🎵 Вырезать MP3", callback_data="base_audio")
+            InlineKeyboardButton(text="🎬 Скачать Видео", callback_data=f"dl_video__{url}"),
+            InlineKeyboardButton(text="🎵 Вырезать MP3", callback_data=f"dl_audio__{url}")
         ],
         [
-            InlineKeyboardButton(text="✂️ Кружок (Кроп)", callback_data="circle_crop"),
-            InlineKeyboardButton(text="👁 Кружок (Blur)", callback_data="circle_blur")
-        ],
-        [
-            InlineKeyboardButton(text="🔊 Bass Boost", callback_data="audio_bass"),
-            InlineKeyboardButton(text="🎧 Эффект 8D", callback_data="audio_8d")
-        ],
-        [
-            InlineKeyboardButton(text="🪞 Отзеркалить видео", callback_data="mirror_video")
+            InlineKeyboardButton(text="✂️ Сделать кружочек (Скоро)", callback_data="blur")
         ]
     ])
-    await message.answer("⚙️ Выбери инструмент:", reply_markup=keyboard)
-
-# 1. ОБРАБОТКА БАЗОВЫХ СКАЧИВАНИЙ
-@dp.callback_query(F.data.in_(["base_video", "base_audio"]))
-async def process_base(callback: CallbackQuery, state: FSMContext):
-    mode = callback.data.split("_")[1] # video или audio
-    user_data = await state.get_data()
-    url = user_data.get('video_url')
-    user_id = callback.from_user.id
     
-    if not url: return await callback.answer("Ссылка устарела, отправь заново.")
+    await message.answer("🧠 Ссылка принята! Что делаем с этим медиа?", reply_markup=keyboard)
+
+# Обработка нажатий на кнопки
+@dp.callback_query(F.data.startswith("dl_"))
+async def process_download(callback: CallbackQuery):
+    # Распаковываем данные из callback_data
+    data_split = callback.data.split("__")
+    mode = data_split[0].split("_")[1] # video или audio
+    url = data_split[1]
+    
     await callback.answer()
-    
-    status = await callback.message.answer("📥 Скачиваю оригинал...")
-    raw_file = None
+    status_msg = await callback.message.answer("⏳ Магия началась... Скачиваю и обрабатываю файл, подожди немного.")
+
     try:
-        if mode == "video":
-            raw_file = await asyncio.to_thread(download_media, url, user_id, audio_only=False)
-            await status.edit_text("🚀 Отправляю видео...")
-            await callback.message.answer_video(video=FSInputFile(raw_file))
-        else:
-            raw_file = await asyncio.to_thread(download_media, url, user_id, audio_only=True)
-            await status.edit_text("🚀 Отправляю аудио...")
-            await callback.message.answer_audio(audio=FSInputFile(raw_file))
-    except Exception as e:
-        logging.error(f"Error base: {e}")
-        await status.edit_text("❌ Ошибка при скачивании.")
-    finally:
-        await status.delete()
-        if raw_file and os.path.exists(raw_file): os.remove(raw_file)
-
-# 2. ОБРАБОТКА КРУЖКОВ (Запрос времени)
-@dp.callback_query(F.data.in_(["circle_crop", "circle_blur"]))
-async def process_circle_start(callback: CallbackQuery, state: FSMContext):
-    circle_type = callback.data.split("_")[1]
-    await state.update_data(circle_type=circle_type)
-    await callback.answer()
-    await state.set_state(EditorStates.entering_circle_time)
-    await callback.message.answer("⏱ Напиши таймкод начала кружка в формате `минуты:секунды` (например, `00:15` или `01:20`).\nДля старта с начала пришли `0`.", parse_mode="Markdown")
-
-# 3. ГЕНЕРАЦИЯ КРУЖКОВ (После ввода времени)
-@dp.message(EditorStates.entering_circle_time)
-async def process_circle_finish(message: Message, state: FSMContext):
-    time_input = message.text.strip()
-    if time_input == "0": start_time = "00:00:00"
-    elif re.match(r'^\d{2}:\d{2}$', time_input): start_time = f"00:{time_input}"
-    else: return await message.answer("❌ Неверный формат. Пример: `00:10` или `0`.")
-
-    user_data = await state.get_data()
-    url = user_data['video_url']
-    circle_type = user_data['circle_type']
-    user_id = message.from_user.id
-    
-    await state.clear()
-    status = await message.answer("⏳ Создаю кружок...")
-    raw_file, out_file = None, f"downloads/{user_id}_circle.mp4"
-    
-    try:
-        raw_file = await asyncio.to_thread(download_media, url, user_id, audio_only=False)
-        success = await convert_to_blur_circle(raw_file, out_file, start_time) if circle_type == "blur" else await convert_to_crop_circle(raw_file, out_file, start_time)
+        # Запускаем тяжелую загрузку в фоновом потоке, чтобы бот не «умирал» для других юзеров
+        file_path = await asyncio.to_thread(download_media, url, mode, callback.from_user.id)
         
-        if success:
-            await status.edit_text("🚀 Отправляю кружок...")
-            await message.answer_video_note(video_note=FSInputFile(out_file))
+        await status_msg.edit_text("🚀 Файл готов! Отправляю в Telegram...")
+        
+        # Отправляем файл пользователю
+        telegram_file = FSInputFile(file_path)
+        if mode == "video":
+            await callback.message.answer_video(video=telegram_file, caption="Твой исходник готов для монтажа! 🎬")
         else:
-            raise Exception("FFmpeg circle error")
-    except Exception as e:
-        logging.error(f"Error circle: {e}")
-        await message.answer("❌ Ошибка обработки кружка.")
-    finally:
-        await status.delete()
-        for f in [raw_file, out_file]:
-            if f and os.path.exists(f): os.remove(f)
-
-# 4. ОБРАБОТКА АУДИО ЭФФЕКТОВ И ЗЕРКАЛА
-@dp.callback_query(F.data.in_(["audio_bass", "audio_8d", "mirror_video"]))
-async def process_effects(callback: CallbackQuery, state: FSMContext):
-    action = callback.data
-    user_data = await state.get_data()
-    url = user_data.get('video_url')
-    user_id = callback.from_user.id
-    
-    if not url: return await callback.answer("Ссылка устарела, отправь заново.")
-    await callback.answer()
-    
-    status = await callback.message.answer("🪄 Накладываю эффекты, подожди...")
-    raw_file, out_file = None, f"downloads/{user_id}_effect.mp4"
-    
-    try:
-        if action == "mirror_video":
-            raw_file = await asyncio.to_thread(download_media, url, user_id, audio_only=False)
-            success = await convert_to_mirror(raw_file, out_file)
-            if success:
-                await status.edit_text("🚀 Отправляю...")
-                await callback.message.answer_video(video=FSInputFile(out_file), caption="🪞 Отзеркалено!")
-                
-        else: # Аудио эффекты
-            out_file = f"downloads/{user_id}_effect.mp3"
-            raw_file = await asyncio.to_thread(download_media, url, user_id, audio_only=True)
-            success = await convert_audio_bass(raw_file, out_file) if action == "audio_bass" else await convert_audio_8d(raw_file, out_file)
-            if success:
-                await status.edit_text("🚀 Отправляю...")
-                await callback.message.answer_audio(audio=FSInputFile(out_file), caption="🔊 Эффект наложен!")
-
-        if not success: raise Exception("FFmpeg effect error")
+            await callback.message.answer_audio(audio=telegram_file, caption="Звуковая дорожка извлечена! 🎵")
             
-    except Exception as e:
-        logging.error(f"Error effect: {e}")
-        await status.edit_text("❌ Ошибка при наложении эффекта.")
-    finally:
-        await status.delete()
-        for f in [raw_file, out_file]:
-            if f and os.path.exists(f): os.remove(f)
+        # Удаляем файл с сервера, чтобы не забивать жесткий диск хостинга
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        await status_msg.delete()
 
+    except Exception as e:
+        logging.error(f"Ошибка при скачивании: {e}")
+        await status_msg.edit_text("❌ Упс... Не удалось обработать эту ссылку. Возможно, видео приватное или сервис временно заблокировал запрос.")
+
+# Заглушка для неактивной кнопки
+@dp.callback_query(F.data == "blur")
+async def process_blur(callback: CallbackQuery):
+    await callback.answer("Эта фича в разработке! Скоро добавлю обрезку под формат круглых видео.", show_alert=True)
+
+# Запуск бота
 async def main():
+    print("Бот успешно запущен и готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
